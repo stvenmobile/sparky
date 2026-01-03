@@ -1,0 +1,13 @@
+# --- Core System ---
+paho-mqtt>=1.6.1      # Communication
+pyyaml>=6.0           # Config files
+requests>=2.31        # API calls (Backup)
+ollama>=0.1.6         # Official Ollama Python Client
+
+# --- Audio Handling ---
+sounddevice>=0.4.6    # Low-latency Audio I/O
+numpy>=1.24           # Math for audio buffers
+
+# --- AI & Speech ---
+faster-whisper>=0.10.0
+soundfile>=0.12.1

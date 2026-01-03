@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.env
+
+# System & IDE
+.DS_Store
+.vscode/
+.idea/
+
+# Project Specific
+*.wav
+*.mp3
+logs/
+output/
