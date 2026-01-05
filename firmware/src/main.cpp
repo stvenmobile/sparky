@@ -8,7 +8,7 @@
 
 // ================= NETWORK CONFIG =================
 // ⚠️ UPDATE THESE FOR YOUR NETWORK
-const char* WIFI_SSID = "googlewifi-5";
+const char* WIFI_SSID = "googlewifi";
 const char* WIFI_PASS = "abc123def456";
 const char* MQTT_BROKER = "192.168.1.40"; // Sentinel/Jetson IP
 const int   MQTT_PORT   = 1883;
