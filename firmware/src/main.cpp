@@ -8,7 +8,7 @@
 
 // ================= NETWORK CONFIG =================
 // ⚠️ UPDATE THESE FOR YOUR NETWORK
-const char* WIFI_SSID = "googlewifi-5";
+const char* WIFI_SSID = "googlewifi";
 const char* WIFI_PASS = "abc123def456";
 const char* MQTT_BROKER = "192.168.1.40"; // Sentinel/Jetson IP
 const int   MQTT_PORT   = 1883;
@@ -32,6 +32,27 @@ static constexpr float EYES_DT_TALK   = 0.65f;
 enum class SpeechState : uint8_t { Silent=0, Talking };
 static SpeechState g_speech = SpeechState::Silent;
 static MouthMood g_currMood = MouthMood::Neutral;
+
+static bool g_isSleeping = false;
+
+static void drawSleepEyes() {
+  // 1. Clear the eye area (roughly top half of screen)
+  // Adjust height (120) based on your screen/eye size if needed
+  gfx.fillRect(0, 0, gfx.width(), 160, TFT_BLACK); 
+
+  // 2. Draw two flat lines (Closed Eyelids)
+  int y = 80; // Approximate vertical center of eyes
+  int w = 60; // Width of the closed eye slit
+  int gap = 40; // Space between eyes
+  
+  int centerX = gfx.width() / 2;
+  int xLeft = centerX - (gap/2) - w;
+  int xRight = centerX + (gap/2);
+
+  // Draw somewhat thick lines (white)
+  gfx.fillRect(xLeft, y, w, 4, TFT_WHITE);
+  gfx.fillRect(xRight, y, w, 4, TFT_WHITE);
+}
 
 static uint32_t g_nextMouthSwapMs = 0;
 static int      g_currTalkIdx     = 0;
@@ -110,7 +131,6 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   msg.toLowerCase();
   String strTopic = String(topic);
 
-  // Debug Print
   Serial.print("MQTT ["); Serial.print(topic); Serial.print("]: "); Serial.println(msg);
 
   // 1. Robot State
@@ -118,8 +138,22 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     if (msg == "speaking") enterTalking();
     else enterSilent(); 
   }
-  // 2. Robot Emotion
+  // 2. Robot Emotion (UPDATED)
   else if (strTopic == "robot/emotion") {
+    // NEW: Handle Sleep/Wake explicitly
+    if (msg == "sleep") {
+      g_isSleeping = true;
+      drawSleepEyes(); // Draw immediately
+      return; // Stop processing other moods
+    }
+    else if (msg == "wake") {
+      g_isSleeping = false;
+      // We don't need to draw immediately; the loop will pick up the 'Eyes::update' again
+    }
+    
+    // If we receive any other emotion, we assume the robot is awake
+    if (g_isSleeping) g_isSleeping = false; 
+
     if (msg == "happy" || msg == "smile") setMood(MouthMood::Smile);
     else if (msg == "sad" || msg == "frown") setMood(MouthMood::Frown);
     else if (msg == "surprise" || msg == "oooh") setMood(MouthMood::Oooh);
@@ -190,9 +224,13 @@ void loop() {
   if (dtMs > 100) dtMs = 100;
   lastMs = tNow;
 
-  // 3. Eye Physics (Autonomous)
-  float eyeScale = (g_speech == SpeechState::Talking) ? EYES_DT_TALK : EYES_DT_IDLE;
-  Eyes::update(gfx, EYES, eyeScale * (dtMs / 1000.0f));
+
+  // 3. Eye Physics
+  if (!g_isSleeping) {
+    // Only animate eyes if we are AWAKE
+    float eyeScale = (g_speech == SpeechState::Talking) ? EYES_DT_TALK : EYES_DT_IDLE;
+    Eyes::update(gfx, EYES, eyeScale * (dtMs / 1000.0f));
+  } 
 
   // 4. Mouth Animation (Only when Talking)
   if (g_speech == SpeechState::Talking && tNow >= g_nextMouthSwapMs) {
