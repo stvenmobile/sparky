@@ -33,7 +33,7 @@ enum class SpeechState : uint8_t { Silent=0, Talking };
 static SpeechState g_speech = SpeechState::Silent;
 static MouthMood g_currMood = MouthMood::Neutral;
 
-static bool g_isSleeping = false;
+static bool g_isSleeping = true;
 
 static void drawSleepEyes() {
   // 1. Clear the eye area (roughly top half of screen)
@@ -206,9 +206,11 @@ void setup() {
   g_mouthY = H - MOUTH_BASELINE_OFFSET - MOUTH_EXTRA_DOWN;
   g_mouthW = (int)roundf(gfx.width() * MOUTH_WIDTH_FACTOR);
 
-  // 5. Default State
+  // 5. Default State: SLEEPING but with a Mouth
+  g_isSleeping = true;      // 1. Set flag so eyes don't animate in loop()
+  drawSleepEyes();          // 2. Draw the closed eye lines
   setMood(MouthMood::Neutral);
-  enterSilent();
+  
 }
 
 // ----------------- MAIN LOOP -----------------
