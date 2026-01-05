@@ -54,6 +54,21 @@ static void drawSleepEyes() {
   gfx.fillRect(xRight, y, w, 4, TFT_WHITE);
 }
 
+static void clearSleepEyes() {
+  // Use the exact same coordinates as drawSleepEyes
+  int y = 80; 
+  int w = 60; 
+  int gap = 40; 
+  
+  int centerX = gfx.width() / 2;
+  int xLeft = centerX - (gap/2) - w;
+  int xRight = centerX + (gap/2);
+
+  // Draw BLACK to erase
+  gfx.fillRect(xLeft, y, w, 4, TFT_BLACK);
+  gfx.fillRect(xRight, y, w, 4, TFT_BLACK);
+}
+
 static uint32_t g_nextMouthSwapMs = 0;
 static int      g_currTalkIdx     = 0;
 static int      g_mouthY = -1;
@@ -147,6 +162,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
       return; // Stop processing other moods
     }
     else if (msg == "wake") {
+      clearSleepEyes();
       g_isSleeping = false;
       // We don't need to draw immediately; the loop will pick up the 'Eyes::update' again
     }
