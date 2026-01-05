@@ -3,6 +3,7 @@ import os
 import sys
 import sounddevice as sd
 from enum import Enum, auto
+import paho.mqtt.client as mqtt  # <--- NEW IMPORT
 
 # Import our modules
 sys.path.append(os.path.join(os.path.dirname(__file__), 'modules'))
@@ -16,10 +17,13 @@ import ollama
 # --- Configuration ---
 DEBUG_MODE = True
 OLLAMA_MODEL = "llama3.2" 
-# Just Hey Jarvis for now (Reliability King)
 ACTIVE_MODELS = ["hey_jarvis_v0.1"]
 VOICE_MODEL = "modules/voices/ryan.onnx"
 CONVERSATION_TIMEOUT = 120  # 2 Minutes
+
+# MQTT Configuration
+MQTT_BROKER = "192.168.1.40"
+MQTT_PORT = 1883
 
 # --- State Definitions ---
 class State(Enum):
@@ -33,12 +37,14 @@ class SparkyBot(WakeWordService):
     def __init__(self):
         print("\n⏳ Initializing Sparky...")
         
-        # 1. Initialize Wake Word (Parent Class)
-        # We pass the list of models we want to use
+        # 1. Initialize MQTT (The Nervous System)
+        self.init_mqtt()
+
+        # 2. Initialize Wake Word (Parent Class)
         super().__init__(models=ACTIVE_MODELS, sensitivity=0.5)
         print(f"✅ Wake Word Loaded: {ACTIVE_MODELS}")
         
-        # 2. Initialize Hardware Services
+        # 3. Initialize Hardware Services
         self.recorder = AudioRecorder()
         self.stt = STTService()
         
@@ -57,6 +63,25 @@ class SparkyBot(WakeWordService):
         # Conversation Logic
         self.in_conversation = False
         self.last_interaction_time = 0
+
+    def init_mqtt(self):
+        """Connects to the robot face"""
+        try:
+            self.mqtt_client = mqtt.Client()
+            self.mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+            self.mqtt_client.loop_start() # Run in background
+            print(f"✅ Connected to Robot Face at {MQTT_BROKER}")
+            
+            # Reset Face to Sleep on Boot
+            self.send_face("emotion", "sleep")
+        except Exception as e:
+            print(f"❌ MQTT Connection Failed: {e}")
+            self.mqtt_client = None
+
+    def send_face(self, topic_suffix, message):
+        """Helper to send MQTT commands safely"""
+        if self.mqtt_client:
+            self.mqtt_client.publish(f"robot/{topic_suffix}", message)
 
     def warmup_brain(self):
         print("🧠 Warming up neural pathways...")
@@ -87,13 +112,18 @@ class SparkyBot(WakeWordService):
                 # Blocks here until "Hey Jarvis" is heard
                 if self.listen():
                     print("✨ WAKE WORD DETECTED")
+                    
+                    # --- WAKE UP THE ROBOT ---
+                    self.send_face("emotion", "wake")  # Open Eyes
+                    self.send_face("emotion", "happy") # Smile
+                    # -------------------------
+
                     self.in_conversation = True
                     self.last_interaction_time = time.time()
                     self.state = State.RECORDING
 
             # --- STATE 2: RECORDING ---
             elif self.state == State.RECORDING:
-                # If we are in conversation mode, we don't need the wake word
                 print(f"\n[{self.state.name}] Listening...")
                 
                 sd.stop()
@@ -107,42 +137,50 @@ class SparkyBot(WakeWordService):
             # --- STATE 3: THINKING ---
             elif self.state == State.THINKING:
                 print(f"\n[{self.state.name}] Transcribing...")
+                
+                # Optional: Look "Puzzled" while thinking
+                # self.send_face("emotion", "puzzled")
+                
                 user_text = self.stt.transcribe(self.audio_file_path)
                 
                 # --- SILENCE HANDLING ---
                 if not user_text:
-                    # If we hear nothing...
                     time_since_active = time.time() - self.last_interaction_time
                     
                     if self.in_conversation and time_since_active < CONVERSATION_TIMEOUT:
-                        # User is thinking? Loop back and listen again.
                         print(f"... Silence ({int(time_since_active)}s / {CONVERSATION_TIMEOUT}s)")
                         self.state = State.RECORDING
                         continue
                     else:
-                        # Timeout Reached!
                         print("⌛ Conversation Timeout.")
                         if self.in_conversation and self.tts:
-                            print("💬 Sparky: 'Catch you later.'")
+                            self.send_face("state", "speaking")
                             self.tts.speak("Catch you later.")
+                            self.send_face("state", "silent")
                         
+                        # --- GO TO SLEEP ---
+                        self.send_face("emotion", "sleep")
+                        # -------------------
+
                         self.in_conversation = False
                         self.state = State.LISTENING
                         continue
 
                 # --- VALID INPUT ---
                 print(f"🗣️ User said: '{user_text}'")
-                self.last_interaction_time = time.time() # Reset timer
+                self.last_interaction_time = time.time()
 
                 if self.is_stop_command(user_text):
                     print("Stop command received.")
                     if self.tts: 
+                        self.send_face("state", "speaking")
                         self.tts.speak("Bye. Catch you later.")
-                        # Give it a moment to finish speaking before killing the process
-                        time.sleep(3) 
+                        self.send_face("state", "silent")
+                        time.sleep(1) # Let animation finish
                     
+                    self.send_face("emotion", "sleep")
                     print("👋 Exiting program.")
-                    break  # <--- This breaks the while True loop and exits the script
+                    break 
 
                 print(f"[{self.state.name}] Querying Ollama...")
                 try:
@@ -162,10 +200,19 @@ class SparkyBot(WakeWordService):
                 print(f"\n[{self.state.name}] Sparky says:")
                 print(f"💬 \"{self.current_response}\"")
                 
-                if self.tts: 
+                if self.tts:
+                    # 1. Start Animation
+                    self.send_face("state", "speaking") 
+                    
+                    # 2. Play Audio (Blocks until done)
                     self.tts.speak(self.current_response)
+                    
+                    # 3. Stop Animation
+                    self.send_face("state", "silent")
                 
-                # After speaking, reset timer and go back to listening (without wake word)
+                # Reset to Neutral mood after talking?
+                self.send_face("emotion", "neutral")
+
                 self.last_interaction_time = time.time()
                 self.state = State.RECORDING
 
