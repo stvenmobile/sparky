@@ -3,7 +3,7 @@ import logging
 import os
 
 # Configuration
-MODEL_SIZE = "tiny.en" 
+MODEL_SIZE = "base.en" 
 DEVICE = "cuda" # Uses the Orin's GPU
 COMPUTE_TYPE = "float16" # Orin NX supports float16
 

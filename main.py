@@ -39,7 +39,6 @@ class SparkyBot(WakeWordService):
         self.init_mqtt()
 
         # 3. Initialize Wake Word (Parent Class)
-        # Note: We pass the model list from the JSON config
         super().__init__(models=self.config["wake_word_models"], sensitivity=0.5)
         print(f"✅ Wake Word Loaded: {self.config['wake_word_models']}")
         
@@ -81,21 +80,14 @@ class SparkyBot(WakeWordService):
             if os.path.exists(CONFIG_FILE):
                 with open(CONFIG_FILE, "r") as f:
                     user_config = json.load(f)
-
-                    # --- NEW: Handle Multi-line Prompts ---
-                    # Checks if 'system_prompt' is a list and joins it with newlines
                     if "system_prompt" in user_config and isinstance(user_config["system_prompt"], list):
                         user_config["system_prompt"] = "\n".join(user_config["system_prompt"])
-                    # --------------------------------------
-
-                    # Merge user config over defaults
                     defaults.update(user_config)
                     print(f"✅ Settings loaded from {CONFIG_FILE}")
             else:
                 print("⚠️ Config file not found, using defaults.")
         except Exception as e:
             print(f"⚠️ Error loading settings: {e}")
-        
         return defaults
 
     def init_mqtt(self):
@@ -107,12 +99,18 @@ class SparkyBot(WakeWordService):
             self.mqtt_client.connect(broker, port, 60)
             self.mqtt_client.loop_start() 
             print(f"✅ Connected to Robot Face at {broker}")
+            # Reset Face and LEDs to Sleep on Boot
             self.send_face("emotion", "sleep")
+            self.send_face("leds", "sleep")
         except Exception as e:
             print(f"❌ MQTT Connection Failed: {e}")
             self.mqtt_client = None
 
     def send_face(self, topic_suffix, message):
+        """
+        Sends MQTT message.
+        topic_suffix: 'emotion', 'state', or 'leds'
+        """
         if self.mqtt_client:
             self.mqtt_client.publish(f"robot/{topic_suffix}", message)
 
@@ -142,7 +140,9 @@ class SparkyBot(WakeWordService):
         while True:
             # --- STATE 1: LISTENING ---
             if self.state == State.LISTENING:
-                # Clean names for display
+                # LED: Idle (Blue Spin)
+                self.send_face("leds", "idle") 
+                
                 clean_names = [os.path.basename(m).replace('.tflite', '') for m in self.models]
                 print(f"\n[{self.state.name}] Waiting for {clean_names} ...")
                 
@@ -150,27 +150,43 @@ class SparkyBot(WakeWordService):
                     print("✨ WAKE WORD DETECTED")
                     self.send_face("emotion", "wake")
                     self.send_face("emotion", "happy")
+                    
+                    # LED: Listen (Cyan Breath)
+                    self.send_face("leds", "listen")
+                    
                     self.in_conversation = True
                     self.last_interaction_time = time.time()
                     self.state = State.RECORDING
                 else:
                     print("👋 Exiting...")
+                    # LED: Off
+                    self.send_face("leds", "sleep")
                     break
 
             # --- STATE 2: RECORDING ---
             elif self.state == State.RECORDING:
                 print(f"\n[{self.state.name}] Listening...")
+                # LED: Listen (Cyan Breath)
+                self.send_face("leds", "listen")
+
                 sd.stop()
                 time.sleep(0.2)
-                # Fixed 5s recording (We can upgrade to VAD later)
                 self.audio_file_path = self.recorder.record(duration=5)
                 self.state = State.THINKING
 
             # --- STATE 3: THINKING ---
             elif self.state == State.THINKING:
                 print(f"\n[{self.state.name}] Transcribing...")
+                # LED: Think (Purple Spin)
+                self.send_face("leds", "think")
+                
                 user_text = self.stt.transcribe(self.audio_file_path)
                 
+                # --- HALLUCINATION FILTER (Fixed) ---
+                has_content = any(char.isalnum() for char in user_text) if user_text else False
+                if not has_content:
+                    user_text = None 
+
                 # --- SILENCE HANDLING ---
                 if not user_text:
                     time_since_active = time.time() - self.last_interaction_time
@@ -182,13 +198,15 @@ class SparkyBot(WakeWordService):
                         print("⌛ Conversation Timeout.")
                         if self.in_conversation and self.tts:
                             self.send_face("state", "speaking")
+                            self.send_face("leds", "speak")
                             self.tts.speak("Catch you later.")
                             self.send_face("state", "silent")
                         
                         self.send_face("emotion", "sleep")
+                        self.send_face("leds", "sleep")
                         self.in_conversation = False
                         self.state = State.LISTENING
-                        self.chat_history = [] # Clear memory
+                        self.chat_history = [] 
                         continue
 
                 # --- VALID INPUT ---
@@ -199,20 +217,21 @@ class SparkyBot(WakeWordService):
                     print("Stop command received.")
                     if self.tts: 
                         self.send_face("state", "speaking")
+                        self.send_face("leds", "speak")
                         self.tts.speak("Bye.")
                         self.send_face("state", "silent")
                         time.sleep(1)
+                    
                     self.send_face("emotion", "sleep")
+                    self.send_face("leds", "sleep")
                     print("👋 Exiting program.")
                     break 
 
                 print(f"[{self.state.name}] Querying Ollama...")
                 
-                # Dynamic Context Injection
                 now_str = datetime.now().strftime("%A, %B %d, %Y at %I:%M %p")
                 dynamic_sys = f"{self.system_prompt} Current Date/Time: {now_str}."
 
-                # Update Memory
                 self.chat_history.append({'role': 'user', 'content': user_text})
                 if len(self.chat_history) > 10:
                     self.chat_history = self.chat_history[-10:]
@@ -235,6 +254,9 @@ class SparkyBot(WakeWordService):
             elif self.state == State.SPEAKING:
                 print(f"\n[{self.state.name}] Sparky says:")
                 print(f"💬 \"{self.current_response}\"")
+                
+                # LED: Speak (Green Scatter)
+                self.send_face("leds", "speak")
                 
                 if self.tts:
                     clean_response = self.current_response.replace('*', '')
