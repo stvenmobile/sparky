@@ -1,267 +1,257 @@
 #include <Arduino.h>
+#include <TFT_eSPI.h> // Hardware-specific library
+#include <SPI.h>
 #include <WiFi.h>
 #include <PubSubClient.h>
-#include <LovyanGFX.hpp>
-#include "lgfx_cyd28.hpp"      
-#include "eyes.h"
-#include "mouth_patterns.h"
+#include <FastLED.h>
 
-// ================= NETWORK CONFIG =================
-// ⚠️ UPDATE THESE FOR YOUR NETWORK
-const char* WIFI_SSID = "googlewifi";
-const char* WIFI_PASS = "abc123def456";
-const char* MQTT_BROKER = "192.168.1.40"; // Sentinel/Jetson IP
-const int   MQTT_PORT   = 1883;
+// --- WIFI & MQTT CONFIGURATION ---
+const char* ssid = "YOUR_WIFI_SSID";
+const char* password = "YOUR_WIFI_PASSWORD";
+const char* mqtt_server = "192.168.1.40"; // IP of your Jetson
+const int mqtt_port = 1883;
 
-// ================= HARDWARE CONFIG ================
-static LGFX gfx;
-static Eyes::State  EYES;
-static Eyes::Layout E_LAYOUT;
+// --- LED RING CONFIGURATION ---
+#define LED_PIN_DATA  27
+#define LED_PIN_CLOCK 22
+#define NUM_LEDS      12
+#define BRIGHTNESS    40
+#define LED_TYPE      APA102 // The Sipeed Ring uses this or SK9822
+#define COLOR_ORDER   BGR    // Try BGR first, change to RGB if colors look weird
 
-// ================= FACE GLOBALS ===================
-static constexpr float   MOUTH_WIDTH_FACTOR    = 0.55f * (2.0f/3.0f);
-static constexpr int     MOUTH_BASELINE_OFFSET = 48;
-static constexpr int     MOUTH_EXTRA_DOWN      = 0;
-static constexpr uint32_t TALK_SWAP_MS_BASE    = 160;
-static constexpr uint32_t TALK_SWAP_JITTER     = 40;
-
-// Speeds: Slower eyes when talking looks more natural
-static constexpr float EYES_DT_IDLE   = 1.0f;
-static constexpr float EYES_DT_TALK   = 0.65f;
-
-enum class SpeechState : uint8_t { Silent=0, Talking };
-static SpeechState g_speech = SpeechState::Silent;
-static MouthMood g_currMood = MouthMood::Neutral;
-
-static bool g_isSleeping = true;
-
-static void drawSleepEyes() {
-  // 1. Clear the eye area (roughly top half of screen)
-  // Adjust height (120) based on your screen/eye size if needed
-  gfx.fillRect(0, 0, gfx.width(), 160, TFT_BLACK); 
-
-  // 2. Draw two flat lines (Closed Eyelids)
-  int y = 80; // Approximate vertical center of eyes
-  int w = 60; // Width of the closed eye slit
-  int gap = 40; // Space between eyes
-  
-  int centerX = gfx.width() / 2;
-  int xLeft = centerX - (gap/2) - w;
-  int xRight = centerX + (gap/2);
-
-  // Draw somewhat thick lines (white)
-  gfx.fillRect(xLeft, y, w, 4, TFT_WHITE);
-  gfx.fillRect(xRight, y, w, 4, TFT_WHITE);
-}
-
-static void clearSleepEyes() {
-  // Use the exact same coordinates as drawSleepEyes
-  int y = 80; 
-  int w = 60; 
-  int gap = 40; 
-  
-  int centerX = gfx.width() / 2;
-  int xLeft = centerX - (gap/2) - w;
-  int xRight = centerX + (gap/2);
-
-  // Draw BLACK to erase
-  gfx.fillRect(xLeft, y, w, 4, TFT_BLACK);
-  gfx.fillRect(xRight, y, w, 4, TFT_BLACK);
-}
-
-static uint32_t g_nextMouthSwapMs = 0;
-static int      g_currTalkIdx     = 0;
-static int      g_mouthY = -1;
-static int      g_mouthW = -1;
-
+// --- OBJECTS ---
+TFT_eSPI gfx = TFT_eSPI(); 
 WiFiClient espClient;
 PubSubClient client(espClient);
+CRGB leds[NUM_LEDS];
 
-static inline uint32_t nowMs(){ return millis(); }
+// --- STATE VARIABLES ---
+String currentLedState = "idle";
+bool g_isSleeping = false;
+unsigned long lastEyeBlink = 0;
+int blinkInterval = 3000;
 
-// ----------------- DRAWING HELPERS -----------------
-static void drawMouthFrame(int baseY, int mouthW, const MouthFrame& mf) {
-  const int W = gfx.width();
-  const int mouthX = (W - mouthW) / 2;
-  const int clearY0 = baseY - MOUTH_MAX_DY - MOUTH_CLEAR_PAD;
-  const int clearY1 = baseY + MOUTH_MAX_DY + MOUTH_CLEAR_PAD;
-  gfx.fillRect(mouthX, clearY0, mouthW, clearY1 - clearY0 + 1, TFT_BLACK);
-
-  gfx.drawFastHLine(mouthX, baseY, ANCHOR_PX, TFT_WHITE);
-  gfx.drawFastHLine(mouthX + mouthW - ANCHOR_PX, baseY, ANCHOR_PX, TFT_WHITE);
-
-  const int innerW = mouthW - 2*ANCHOR_PX;
-  if (innerW <= 0) return;
-  const int segW   = max(1, innerW / MOUTH_SEGMENTS);
-  const int rem    = innerW - segW * MOUTH_SEGMENTS;
-  int x = mouthX + ANCHOR_PX;
-
-  for (int i = 0; i < MOUTH_SEGMENTS; ++i) {
-    int w  = segW + ((i == MOUTH_SEGMENTS - 1) ? rem : 0);
-    int uy = constrain(mf.upper[i], -MOUTH_MAX_DY, MOUTH_MAX_DY);
-    int ly = constrain(mf.lower[i], -MOUTH_MAX_DY, MOUTH_MAX_DY);
-    gfx.drawFastHLine(x, baseY - uy, w, TFT_WHITE);
-    gfx.drawFastHLine(x, baseY - ly, w, TFT_WHITE);
-    x += w;
+// ==========================================
+//   HELPER FUNCTIONS: LED RING
+// ==========================================
+void updateLedRing() {
+  // We use millis() for non-blocking animations
+  unsigned long now = millis();
+  
+  if (currentLedState == "speak") {
+    // Green "VU Meter" Scatter
+    fadeToBlackBy(leds, NUM_LEDS, 60); // Fast fade
+    if (random(10) > 3) { // Flicker effect
+        int pos = random(NUM_LEDS);
+        leds[pos] = CRGB::Green;
+    }
+  } 
+  else if (currentLedState == "think") {
+    // Spinning Purple
+    fadeToBlackBy(leds, NUM_LEDS, 40); // Leave a trail
+    int pos = (now / 80) % NUM_LEDS;   // Speed of spin
+    leds[pos] = CRGB::Purple;
   }
-}
-
-static void drawMouthMood(MouthMood mood) {
-  drawMouthFrame(g_mouthY, g_mouthW, moodToFrame(mood));
-}
-
-static void drawMouthTalkIdx(int idx) {
-  idx = (idx % NUM_TALK_FRAMES + NUM_TALK_FRAMES) % NUM_TALK_FRAMES;
-  drawMouthFrame(g_mouthY, g_mouthW, TALK_FRAMES[idx]);
-}
-
-// ----------------- STATE MANAGERS -----------------
-static void enterSilent(){
-  g_speech = SpeechState::Silent;
-  gfx.startWrite();
-  drawMouthMood(g_currMood);
-  gfx.endWrite();
-}
-
-static void enterTalking(){
-  g_speech = SpeechState::Talking;
-  g_currTalkIdx = random(NUM_TALK_FRAMES);
-  g_nextMouthSwapMs = nowMs() + TALK_SWAP_MS_BASE;
-  gfx.startWrite();
-  drawMouthTalkIdx(g_currTalkIdx);
-  gfx.endWrite();
-}
-
-static void setMood(MouthMood m) {
-  g_currMood = m;
-  if (g_speech == SpeechState::Silent) {
-    enterSilent(); // Redraw immediately
+  else if (currentLedState == "listen") {
+    // Breathing Cyan
+    float breath = (exp(sin(now/2000.0*PI)) - 0.36787944)*108.0;
+    fill_solid(leds, NUM_LEDS, CHSV(130, 255, breath)); // Hue 130 is Cyan
   }
+  else if (currentLedState == "sleep") {
+    // Off (or very dim red heartbeat if you prefer)
+    fill_solid(leds, NUM_LEDS, CRGB::Black);
+  }
+  else {
+    // IDLE: Slow Blue Spin (Tony Stark Arc Reactor style)
+    fadeToBlackBy(leds, NUM_LEDS, 10);
+    int pos = (now / 200) % NUM_LEDS;
+    leds[pos] = CRGB::Blue;
+  }
+  
+  FastLED.show();
 }
 
-// ----------------- MQTT LOGIC -----------------
+// ==========================================
+//   HELPER FUNCTIONS: ROBOT FACE
+// ==========================================
+
+// Helper to erase the "Sleep Lines" before opening eyes
+static void clearSleepEyes() {
+  int y = 110; // Adjust Y to match your screen center
+  int w = 80; 
+  int gap = 20; 
+  int h = 6;
+  
+  int centerX = gfx.width() / 2;
+  int xLeft = centerX - (gap/2) - w;
+  int xRight = centerX + (gap/2);
+
+  // Paint Black to erase
+  gfx.fillRect(xLeft, y, w, h, TFT_BLACK);
+  gfx.fillRect(xRight, y, w, h, TFT_BLACK);
+}
+
+void drawSleepEyes() {
+  gfx.fillScreen(TFT_BLACK);
+  
+  int y = 110; 
+  int w = 80; 
+  int gap = 20; 
+  int h = 6;
+  
+  int centerX = gfx.width() / 2;
+  int xLeft = centerX - (gap/2) - w;
+  int xRight = centerX + (gap/2);
+
+  // Draw Cyan Lines
+  gfx.fillRect(xLeft, y, w, h, TFT_CYAN);
+  gfx.fillRect(xRight, y, w, h, TFT_CYAN);
+}
+
+void drawOpenEyes() {
+  int eyeRadius = 45;
+  int gap = 20;
+  int y = 110;
+  int centerX = gfx.width() / 2;
+
+  // Clear screen if coming from sleep to ensure clean background
+  // (Or just erase the lines using clearSleepEyes if mixing)
+  
+  // Left Eye
+  gfx.fillCircle(centerX - eyeRadius - (gap/2), y, eyeRadius, TFT_CYAN);
+  // Right Eye
+  gfx.fillCircle(centerX + eyeRadius + (gap/2), y, eyeRadius, TFT_CYAN);
+}
+
+void blinkEyes() {
+  if (g_isSleeping) return; // Don't blink if sleeping
+
+  // Close
+  gfx.fillScreen(TFT_BLACK);
+  drawSleepEyes(); // Briefly look like sleep lines
+  delay(100);
+  
+  // Open
+  clearSleepEyes();
+  drawOpenEyes();
+}
+
+// ==========================================
+//   MQTT CALLBACK
+// ==========================================
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
-  String msg;
-  for (int i = 0; i < length; i++) msg += (char)payload[i];
-  msg.toLowerCase();
-  String strTopic = String(topic);
-
-  Serial.print("MQTT ["); Serial.print(topic); Serial.print("]: "); Serial.println(msg);
-
-  // 1. Robot State
-  if (strTopic == "robot/state") {
-    if (msg == "speaking") enterTalking();
-    else enterSilent(); 
+  String msg = "";
+  for (unsigned int i = 0; i < length; i++) {
+    msg += (char)payload[i];
   }
-  // 2. Robot Emotion (UPDATED)
-  else if (strTopic == "robot/emotion") {
-    // NEW: Handle Sleep/Wake explicitly
+  String topicStr = String(topic);
+
+  // --- HANDLE LED COMMANDS ---
+  if (topicStr == "robot/leds") {
+    currentLedState = msg; // "listen", "think", "speak", "sleep", "idle"
+  }
+
+  // --- HANDLE FACE COMMANDS ---
+  if (topicStr == "robot/emotion") {
     if (msg == "sleep") {
       g_isSleeping = true;
-      drawSleepEyes(); // Draw immediately
-      return; // Stop processing other moods
+      currentLedState = "sleep"; // Auto-sync LED
+      drawSleepEyes();
     }
     else if (msg == "wake") {
-      clearSleepEyes();
-      g_isSleeping = false;
-      // We don't need to draw immediately; the loop will pick up the 'Eyes::update' again
+      if (g_isSleeping) {
+        clearSleepEyes();
+        g_isSleeping = false;
+        currentLedState = "idle"; // Auto-sync LED
+        drawOpenEyes();
+      }
     }
-    
-    // If we receive any other emotion, we assume the robot is awake
-    if (g_isSleeping) g_isSleeping = false; 
-
-    if (msg == "happy" || msg == "smile") setMood(MouthMood::Smile);
-    else if (msg == "sad" || msg == "frown") setMood(MouthMood::Frown);
-    else if (msg == "surprise" || msg == "oooh") setMood(MouthMood::Oooh);
-    else if (msg == "confused" || msg == "puzzled") setMood(MouthMood::Puzzled);
-    else setMood(MouthMood::Neutral);
+    else if (msg == "happy") {
+      // Just ensure eyes are open
+      if (g_isSleeping) {
+         clearSleepEyes();
+         g_isSleeping = false;
+      }
+      drawOpenEyes();
+    }
+  }
+  
+  // --- HANDLE SPEAKING STATE (Animation) ---
+  if (topicStr == "robot/state") {
+     if (msg == "speaking") {
+        // You could add a "mouth moving" animation here later
+        // For now, we rely on the LEDs to show speaking
+     }
   }
 }
 
 void reconnect() {
   while (!client.connected()) {
-    Serial.print("Connecting to MQTT...");
-    // Connect with Client ID "SparkyFace"
     if (client.connect("SparkyFace")) {
-      Serial.println("connected");
-      client.subscribe("robot/#"); // Subscribe to all robot topics
+      // Subscribe to topics
+      client.subscribe("robot/emotion");
+      client.subscribe("robot/state");
+      client.subscribe("robot/leds"); 
     } else {
-      Serial.print("failed, rc=");
-      Serial.print(client.state());
-      Serial.println(" retrying in 5s");
-      delay(5000);
+      delay(2000);
     }
   }
 }
 
-// ----------------- MAIN SETUP -----------------
+// ==========================================
+//   SETUP & LOOP
+// ==========================================
 void setup() {
-  Serial.begin(115200);
-  
-  // 1. Display Init
+  // 1. Init Display
+  pinMode(21, OUTPUT);    // Define the backlight pin
+  digitalWrite(21, HIGH); // Turn it ON!
+
   gfx.init();
-  gfx.setRotation(3); // USB ports on right
+  gfx.setRotation(1); // Landscape
   gfx.fillScreen(TFT_BLACK);
   
-  // 2. WiFi Setup
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  Serial.print("Connecting WiFi");
+  // 2. Init LEDs
+  FastLED.addLeds<LED_TYPE, LED_PIN_DATA, LED_PIN_CLOCK, COLOR_ORDER>(leds, NUM_LEDS);
+  FastLED.setBrightness(BRIGHTNESS);
+  
+  // Test LEDs (Red Flash)
+  fill_solid(leds, NUM_LEDS, CRGB::Red);
+  FastLED.show();
+  delay(500);
+  fill_solid(leds, NUM_LEDS, CRGB::Black);
+  FastLED.show();
+
+  // 3. Init WiFi
+  WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
-    Serial.print(".");
   }
-  Serial.println("\nWiFi Connected.");
 
-  // 3. MQTT Setup
-  client.setServer(MQTT_BROKER, MQTT_PORT);
+  // 4. Init MQTT
+  client.setServer(mqtt_server, mqtt_port);
   client.setCallback(mqttCallback);
-
-  // 4. Face Init
-  Eyes::init(gfx, EYES, E_LAYOUT);
-  int H = gfx.height();
-  g_mouthY = H - MOUTH_BASELINE_OFFSET - MOUTH_EXTRA_DOWN;
-  g_mouthW = (int)roundf(gfx.width() * MOUTH_WIDTH_FACTOR);
-
-  // 5. Default State: SLEEPING but with a Mouth
-  g_isSleeping = true;      // 1. Set flag so eyes don't animate in loop()
-  drawSleepEyes();          // 2. Draw the closed eye lines
-  setMood(MouthMood::Neutral);
   
+  // Start in Sleep Mode
+  g_isSleeping = true;
+  drawSleepEyes();
+  currentLedState = "sleep";
 }
 
-// ----------------- MAIN LOOP -----------------
 void loop() {
-  // 1. Network Housekeeping
-  if (!client.connected()) reconnect();
+  if (!client.connected()) {
+    reconnect();
+  }
   client.loop();
 
-  // 2. Timing
-  static uint32_t lastMs = nowMs();
-  uint32_t tNow = nowMs();
-  uint32_t dtMs = tNow - lastMs;
-  if (dtMs > 100) dtMs = 100;
-  lastMs = tNow;
+  // 1. Update LED Animations (every frame)
+  updateLedRing();
 
-
-  // 3. Eye Physics
+  // 2. Handle Blinking (only if awake)
   if (!g_isSleeping) {
-    // Only animate eyes if we are AWAKE
-    float eyeScale = (g_speech == SpeechState::Talking) ? EYES_DT_TALK : EYES_DT_IDLE;
-    Eyes::update(gfx, EYES, eyeScale * (dtMs / 1000.0f));
-  } 
-
-  // 4. Mouth Animation (Only when Talking)
-  if (g_speech == SpeechState::Talking && tNow >= g_nextMouthSwapMs) {
-    int nextIdx = g_currTalkIdx;
-    while (nextIdx == g_currTalkIdx) nextIdx = random(NUM_TALK_FRAMES);
-    g_currTalkIdx = nextIdx;
-
-    gfx.startWrite();
-    drawMouthTalkIdx(g_currTalkIdx);
-    gfx.endWrite();
-
-    g_nextMouthSwapMs = tNow + TALK_SWAP_MS_BASE + random(TALK_SWAP_JITTER*2) - TALK_SWAP_JITTER;
+    if (millis() - lastEyeBlink > blinkInterval) {
+      blinkEyes();
+      lastEyeBlink = millis();
+      blinkInterval = random(2000, 6000); // Random blink time
+    }
   }
-
-  delay(16); // ~60 FPS Cap
 }
