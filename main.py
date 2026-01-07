@@ -32,6 +32,35 @@ class State(Enum):
     THINKING = auto()   # Transcribing & LLM
     SPEAKING = auto()   # TTS
 
+# --- LOGGING SETUP ---
+class DualLogger:
+    """
+    Writes output to BOTH the terminal and a log file.
+    """
+    def __init__(self, filename):
+        self.terminal = sys.stdout
+        self.log_file = open(filename, "a", encoding="utf-8") # "a" = append mode
+
+    def write(self, message):
+        self.terminal.write(message)
+        self.log_file.write(message)
+        self.log_file.flush() # Ensure it writes immediately (crash safety)
+
+    def flush(self):
+        # Needed for python 3 compatibility
+        self.terminal.flush()
+        self.log_file.flush()
+
+# Create logs directory if it doesn't exist
+if not os.path.exists("logs"):
+    os.makedirs("logs")
+
+# Redirect ALL print() statements to the file + terminal
+# We use a timestamp in the filename so you get a fresh log every time you restart
+log_filename = datetime.now().strftime("logs/sparky_%Y-%m-%d.log")
+sys.stdout = DualLogger(log_filename)
+sys.stderr = DualLogger(log_filename) # Capture crashes/errors too
+
 # --- The Orchestrator Class ---
 class SparkyBot(WakeWordService):
     # HARD EXIT (Kills the Python Script)
