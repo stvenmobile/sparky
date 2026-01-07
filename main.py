@@ -71,11 +71,12 @@ class SparkyBot(WakeWordService):
         defaults = {
             "system_prompt": "You are Sparky, a witty robot assistant.",
             "ollama_model": "llama3.2",
-            "wake_word_models": ["hey_jarvis_v0.1"], 
+            "wake_word_models": ["hey_sparky"], 
             "voice_model": "modules/voices/ryan.onnx",
             "timeout": 120,
             "mqtt_broker": "192.168.1.40",
-            "mqtt_port": 1883
+            "mqtt_port": 1883,
+            "vad_threshold": 500
         }
         try:
             if os.path.exists(CONFIG_FILE):
@@ -163,8 +164,12 @@ class SparkyBot(WakeWordService):
 
                 sd.stop()
                 time.sleep(0.2)
-                # This calls the recorder class
-                self.audio_file_path = self.recorder.record(duration=5)
+                # Get threshold from config (or default to 500 if missing)
+                thresh = self.config.get("vad_threshold", 500)
+                
+                # Pass it to the recorder
+                self.audio_file_path = self.recorder.record(threshold=thresh)
+                
                 self.state = State.THINKING
 
             # --- STATE 3: THINKING ---
