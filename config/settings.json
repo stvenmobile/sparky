@@ -9,10 +9,13 @@
     "5. Humor: Use humor and occasional slang to keep the conversation interesting."
   ],
   "ollama_model": "llama3.2",
+  "cloud_provider": "gemini",
+  "cloud_model": "gemini-2.5-flash",
   "wake_word_models": ["modules/hey_sparky.tflite", "hey_jarvis_v0.1"],
   "voice_model": "modules/voices/ryan.onnx",
   "timeout": 120,
+  "google_api_key": "AIzaSyCgtxikAFOYChxT5ONZHR245ARWsaIJYrg",
   "mqtt_broker": "192.168.1.40",
   "mqtt_port": 1883,
   "vad_threshold": 500
-  }
+}
