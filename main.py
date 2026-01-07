@@ -34,6 +34,21 @@ class State(Enum):
 
 # --- The Orchestrator Class ---
 class SparkyBot(WakeWordService):
+    # HARD EXIT (Kills the Python Script)
+    def is_kill_command(self, text):
+        if not text: return False
+        clean = text.lower().strip()
+        # Phrases that mean "I am done developing, kill the app"
+        kill_phrases = ["system shutdown", "terminate program", "kill sparky"]
+        return any(p in clean for p in kill_phrases)
+
+    # SOFT EXIT (Goes to Wake Word Mode)
+    def is_sleep_command(self, text):
+        if not text: return False
+        clean = text.lower().strip()
+        # Phrases that mean "Stop listening for now"
+        sleep_phrases = ["stop", "exit", "quit", "go to sleep", "that's all", "that is all", "bye", "goodbye"]
+        return any(p in clean for p in sleep_phrases)
     def __init__(self, use_cloud=False):
         print("\n⏳ Initializing Sparky...")
         
@@ -206,15 +221,22 @@ class SparkyBot(WakeWordService):
             # --- STATE 3: THINKING ---
             elif self.state == State.THINKING:
                 print(f"\n[{self.state.name}] Transcribing...")
+                self.send_face("leds", "think") # LED: Purple Spin
                 
-                user_text = self.stt.transcribe(self.audio_file_path)
-                
-                # --- HALLUCINATION FILTER ---
+                # 1. CRASH FIX: Check if audio was actually recorded
+                # If VAD timed out, audio_file_path is None. We must handle that.
+                if self.audio_file_path and os.path.exists(self.audio_file_path):
+                    user_text = self.stt.transcribe(self.audio_file_path)
+                else:
+                    user_text = None 
+
+                # 2. HALLUCINATION FILTER
+                # Sometimes Whisper returns empty strings or pure noise
                 has_content = any(char.isalnum() for char in user_text) if user_text else False
                 if not has_content:
                     user_text = None 
 
-                # --- SILENCE HANDLING ---
+                # 3. SILENCE / TIMEOUT HANDLING
                 if not user_text:
                     time_since_active = time.time() - self.last_interaction_time
                     if self.in_conversation and time_since_active < timeout_sec:
@@ -225,43 +247,66 @@ class SparkyBot(WakeWordService):
                         print("⌛ Conversation Timeout.")
                         if self.in_conversation and self.tts:
                             self.send_face("state", "speaking")
+                            self.send_face("leds", "speak")
                             self.tts.speak("Catch you later.")
                             self.send_face("state", "silent")
                         
                         self.send_face("emotion", "sleep")
+                        self.send_face("leds", "sleep")
                         self.in_conversation = False
                         self.state = State.LISTENING
                         self.chat_history = [] 
                         continue
 
-                # --- VALID INPUT ---
+                # 4. VALID INPUT RECEIVED
                 print(f"🗣️ User said: '{user_text}'")
                 self.last_interaction_time = time.time()
 
-                if self.is_stop_command(user_text):
-                    print("Stop command received.")
-                    if self.tts: 
+                # --- COMMAND INTENT CHECKS ---
+
+                # Priority A: KILL (Shut down the script)
+                if self.is_kill_command(user_text):
+                    print("💀 Kill command received.")
+                    if self.tts:
                         self.send_face("state", "speaking")
-                        self.tts.speak("Bye.")
+                        self.send_face("leds", "speak")
+                        self.tts.speak("Shutting down system.")
+                        self.send_face("state", "silent")
+                        time.sleep(2)
+                    
+                    self.send_face("emotion", "sleep")
+                    self.send_face("leds", "sleep")
+                    sys.exit(0) # <--- EXIT TO TERMINAL
+
+                # Priority B: SLEEP (Go to Wake Word)
+                elif self.is_sleep_command(user_text):
+                    print("💤 Sleep command received.")
+                    if self.tts:
+                        self.send_face("state", "speaking")
+                        self.send_face("leds", "speak")
+                        self.tts.speak("Ok, later.")
                         self.send_face("state", "silent")
                         time.sleep(1)
                     
                     self.send_face("emotion", "sleep")
-                    print("👋 Exiting program.")
-                    break 
+                    self.send_face("leds", "sleep")
+                    self.in_conversation = False
+                    self.state = State.LISTENING
+                    self.chat_history = []
+                    continue # Skip the brain query
 
+                # Priority C: CHAT (Query the Brain)
                 print(f"[{self.state.name}] Querying {self.provider if self.use_cloud else 'Local'} Brain...")
                 
                 now_str = datetime.now().strftime("%A, %B %d, %Y at %I:%M %p")
                 dynamic_sys = f"{self.system_prompt} Current Date/Time: {now_str}."
 
-                # Logic for Brain Selection
                 try:
                     bot_reply = ""
                     
+                    # --- PATH 1: GEMINI (CLOUD) ---
                     if self.use_cloud and self.provider == "gemini":
-                        # GEMINI (Google)
-                        # Construct a single prompt block (simplest for Gemini 1.5)
+                        # Construct prompt block
                         full_prompt = f"System: {dynamic_sys}\n\n"
                         for msg in self.chat_history:
                             full_prompt += f"{msg['role']}: {msg['content']}\n"
@@ -269,34 +314,22 @@ class SparkyBot(WakeWordService):
                         
                         response = self.cloud_model.generate_content(full_prompt)
                         bot_reply = response.text
-
-                    elif self.use_cloud and self.provider == "openai":
-                        # OPENAI (GPT)
+                        
+                        # Manually append history for Gemini
                         self.chat_history.append({'role': 'user', 'content': user_text})
-                        full_context = [{'role': 'system', 'content': dynamic_sys}] + self.chat_history
-                        
-                        response = self.cloud_client.chat.completions.create(
-                            model=self.config.get("cloud_model", "gpt-4o-mini"),
-                            messages=full_context
-                        )
-                        bot_reply = response.choices[0].message.content
-                        
+
+                    # --- PATH 2: OLLAMA (LOCAL) ---
                     else:
-                        # LOCAL (Ollama)
                         self.chat_history.append({'role': 'user', 'content': user_text})
                         full_context = [{'role': 'system', 'content': dynamic_sys}] + self.chat_history
                         
                         response = ollama.chat(model=self.config["ollama_model"], messages=full_context)
                         bot_reply = response['message']['content']
-
-                    # Save context & Speak
-                    # (Note: For Gemini, we manually track history in the list, even if we send a block)
-                    if not (self.use_cloud and self.provider == "openai") and not (not self.use_cloud):
-                         self.chat_history.append({'role': 'user', 'content': user_text})
-
+                    
+                    # Common Response Handling
                     self.chat_history.append({'role': 'assistant', 'content': bot_reply})
                     
-                    # Trim Memory
+                    # Trim Memory (Keep last 10 turns)
                     if len(self.chat_history) > 10:
                         self.chat_history = self.chat_history[-10:]
 
