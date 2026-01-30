@@ -1,0 +1,16 @@
+# --- Core Hardware & Audio ---
+sounddevice
+soundfile
+numpy
+paho-mqtt
+
+# --- AI & Cloud Clients ---
+ollama
+google-generativeai
+openai
+
+# --- Graphics (The Face) ---
+pygame
+
+# --- Utilities ---
+# (Standard libs like json, os, sys, time, datetime are built-in)

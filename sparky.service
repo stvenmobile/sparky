@@ -1,0 +1,23 @@
+[Unit]
+Description=Sparky Robot Service
+After=network.target sound.target graphical.target
+
+[Service]
+Type=simple
+User=steve
+Group=steve
+
+# Environment variables for Audio and Display
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/steve/.Xauthority
+Environment=PULSE_RUNTIME_PATH=/run/user/1000/pulse
+
+# Path to your script
+ExecStart=/home/steve/sparky/start_sparky.sh
+
+# Restart automatically if it crashes
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

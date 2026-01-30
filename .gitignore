@@ -1,3 +1,9 @@
 venv/
 __pycache__/
 *.pyc
+config.json
+data/
+__pycache__/
+CTranslate2/
+*.wav
+src/piper_engine/
