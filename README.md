@@ -46,7 +46,7 @@ sudo apt-get install python3-pip python3-venv libportaudio2
 
 ### 2. Python Environment
 ```bash
-git clone [https://github.com/stvenmobile/sparky.git](https://github.com/stvenmobile/sparky.git)
+git clone https://github.com/stvenmobile/sparky.git
 cd sparky
 python3 -m venv venv
 source venv/bin/activate
@@ -61,66 +61,11 @@ Settings are managed in config.json. Key fields:
 
 ```json
 {
-    "voice": {
-        "model_path": "src/piper_engine/en_US-lessac-medium.onnx",
-        "binary_path": "src/piper_engine/piper/piper"
-    },
-    "whisper": {
-        "size": "small",
-        "device": "cuda"
-    },
-    "ollama": {
-        "host": "http://127.0.0.1:11434",
-        "model": "llama3.2",
-        "timeout": 120, 
-        "keep_alive": -1
-    },
-    "cloud_api": {
-        "provider": "gemini", 
-        "api_key": "<Google API Key>",
-        "model": "gemini-3-flash-preview",
-        "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-    },
-    "system_settings": {
-        "context_window_size": 14,
-        "auto_summary_interval": 10
-    },
-    "thermal": {
-        "enabled": true,
-        "warning_temp": 80,
-        "shutdown_temp": 90,
-        "check_interval": 5
-    },
-    "interaction": {
-        "silence_duration": 1.2,
-        "mic_threshold": 0.08,
-        "max_listen_duration": 60
-    },
-    "commands": {
-        "vision_on": ["vision mode", "camera mode", "show me what you see", "visuals on", "activate camera"],
-        "vision_off": ["exit vision", "normal mode", "face mode", "hide camera", "stop camera"],
-        "vision_query": ["what do you see", "describe the room", "who is there", "look around"],
-        "exit": ["exit program", "shutdown system", "terminate program"],
-        "sleep": ["go to sleep", "sleep now", "hibernate", "standby"],
-        "calendar": ["calendar", "schedule", "appointment", "set event"],
-        "cloud_query": ["search the web", "google this", "check online", "ask the cloud", "go online", "look up"],
-        "wake": ["wake up", "sparky", "systems online"],
-        "mute": ["stop listening", "mute microphone", "quiet mode"],
-        "text_mode": ["switch to text", "text mode", "keyboard mode", "enable typing"],
-        "voice_mode": ["switch to voice", "voice mode", "mic mode", "enable microphone"]
-    },   
-    "fault_prompt": "You are Sparky, a helpful robot assistant. Be brief. If you do not know the answer to a question, strictly say 'I don't know' or 'I would need to check online for that.' Do not guess facts or numbers.",
-    "system_specs": "Running on NVIDIA Jetson Orin NX (16GB RAM).",
-    "users": {
-        "steve": {
-            "birthday": "10/18/1951",
-            "prompt": "You are Sparky. Steve is a systems engineer. He likes robotics, AI, art, design and 3d printing. Be technical. If you lack data, admit it immediately.",
-            "memory_file": "steve_memory.json"
-        },
-    }
+    "voice": { "model_path": "src/piper_engine/en_US-lessac-medium.onnx" },
+    "ollama": { "model": "llama3.2", "timeout": 120 },
+    "thermal": { "enabled": true, "shutdown_temp": 90 },
+    "interaction": { "mic_threshold": 0.08 }
 }
-
-
 ```
 
 ### 4. Usage
@@ -152,6 +97,7 @@ python src/sparky_core.py
 | **Utility** | "Schedule [event] for [date]" | Adds to calendar memory. |
 
 ### 6. Directory Structure
+```bash
 sparky/
 ├── config.json         # Main settings
 ├── thermal_log.txt     # Safety logs
@@ -162,3 +108,11 @@ sparky/
 │   ├── sparky_vision.py   # YOLO Object Detection
 │   └── piper_engine/      # TTS Binary & Models
 └── requirements.txt
+```
+
+### 7. Troubleshooting
+Audio Error: If sounddevice fails, ensure libportaudio2 is installed and your user is in the audio group.
+
+Vision Crash: If the app crashes on exit (core dumped), ensure you use sparky_core.py V9.4+ which handles clean shutdowns.
+
+Squished Video: The face_renderer.py automatically scales 720p video to fit 1024x600 screens. Ensure your camera supports at least 720p.
