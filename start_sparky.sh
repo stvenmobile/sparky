@@ -21,4 +21,4 @@ echo "Started Face Renderer (PID: $FACE_PID)"
 sleep 5
 
 # 5. Start Brain (Using VENV Python)
-/home/steve/sparky/venv/bin/python3 src/sparky_core.py
+/home/steve/sparky/venv/bin/python3 src/sparky_core.py 
