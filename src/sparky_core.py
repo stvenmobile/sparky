@@ -25,7 +25,7 @@ except ImportError:
     SparkyVision = None
 
 # --- VERSION CONTROL ---
-SPARKY_VERSION = "9.4 (Stable Exit)"
+SPARKY_VERSION = "9.6 (Echo Cancellation)"
 
 # --- CONFIG & TUNING ---
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
@@ -33,7 +33,8 @@ CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 THERMAL_LOG_PATH = os.path.join(BASE_DIR, "thermal_log.txt")
 
 # TUNING: How loud you must speak to interrupt Sparky (0.0 to 1.0)
-INTERRUPT_THRESHOLD = 0.15 
+# RAISED to 0.30 to prevent self-interruption
+INTERRUPT_THRESHOLD = 0.30 
 
 def load_config():
     try:
@@ -57,12 +58,21 @@ VOICE_MODEL = os.path.join(BASE_DIR, CONFIG.get("voice", {}).get("model_path", "
 DATA_DIR = os.path.join(BASE_DIR, "data/users")
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# Whisper
-WHISPER_SIZE = CONFIG.get("whisper", {}).get("size", "small")
+# --- WHISPER LOADING (WITH MEMORY FALLBACK) ---
+WHISPER_CFG = CONFIG.get("whisper", {})
+WHISPER_SIZE = WHISPER_CFG.get("size", "base.en") 
+COMPUTE_TYPE = WHISPER_CFG.get("compute_type", "int8_float16")
 DEVICE = "cuda"
-print("⏳ Loading Whisper...")
-whisper = WhisperModel(WHISPER_SIZE, device=DEVICE, compute_type="float16")
-print("✅ Whisper Loaded.")
+
+print(f"⏳ Loading Whisper ({WHISPER_SIZE} / {COMPUTE_TYPE})...")
+try:
+    whisper = WhisperModel(WHISPER_SIZE, device=DEVICE, compute_type=COMPUTE_TYPE)
+    print("✅ Whisper Loaded on GPU.")
+except Exception as e:
+    print(f"⚠️ Whisper GPU Load Failed (OOM?): {e}")
+    print("   -> Switching to CPU (int8) to prevent crash.")
+    whisper = WhisperModel(WHISPER_SIZE, device="cpu", compute_type="int8")
+    print("✅ Whisper Loaded on CPU (Fallback Mode).")
 
 # Ollama Config
 OLLAMA_CFG = CONFIG.get("ollama", {})
@@ -207,7 +217,7 @@ def clean_and_extract_emotion(text):
         elif "sleep" in a.lower(): send_face_cmd(emotion="sleep")
     return re.sub(r'\*.*?\*', '', text).strip()
 
-# --- AUDIO PLAYER (INTERRUPT ENABLED) ---
+# --- AUDIO PLAYER (INTERRUPT ENABLED + ECHO GUARD) ---
 def play_audio(filename, allow_interrupt=True):
     data, fs = sf.read(filename, dtype='float32')
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -215,6 +225,10 @@ def play_audio(filename, allow_interrupt=True):
     current_pos = 0
     was_interrupted = False
     
+    # Track playback time for the Grace Period
+    playback_start_time = time.time()
+    GRACE_PERIOD = 1.5 # Ignore interruptions for the first 1.5 seconds
+
     out_stream = sd.OutputStream(samplerate=fs, channels=1, blocksize=chunk_size)
     out_stream.start()
     
@@ -241,7 +255,10 @@ def play_audio(filename, allow_interrupt=True):
                 try:
                     mic_chunk, _ = in_stream.read(chunk_size)
                     mic_vol = np.sqrt(np.mean(mic_chunk**2))
-                    if mic_vol > INTERRUPT_THRESHOLD:
+                    
+                    # --- NEW: Check Grace Period ---
+                    elapsed = time.time() - playback_start_time
+                    if elapsed > GRACE_PERIOD and mic_vol > INTERRUPT_THRESHOLD:
                         print(f"🛑 INTERRUPT DETECTED (Vol: {mic_vol:.3f})")
                         was_interrupted = True
                         break
@@ -299,8 +316,12 @@ def listen_to_mic(threshold, silence, max_dur):
 class SparkyBot:
     def __init__(self, start_mode="voice"):
         print(f"\n🤖 Sparky V{SPARKY_VERSION} Initialized.")
+        
+        # --- START VISION (WITH EFFICIENCY DEFAULTS) ---
         if SparkyVision:
-            self.vision = SparkyVision()
+            # Default to 'n' (nano) model if not specified in config
+            v_size = CONFIG.get("vision", {}).get("model_size", "n")
+            self.vision = SparkyVision(model_size=v_size)
             self.vision.start()
         else:
             self.vision = None
